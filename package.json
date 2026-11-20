@@ -1,0 +1,33 @@
+{
+  "devDependencies": {
+    "@types/chrome": "0.3.7",
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "happy-dom": "21.0.4",
+    "playwright": "1.65.1",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@peculiar/pdf-core": "2.0.1",
+    "asn1js": "4.1.0",
+    "pkijs": "4.0.1",
+    "reflect-metadata": "0.2.2"
+  },
+  "name": "sgt-ver-firmas",
+  "version": "0.1.4",
+  "type": "module",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teorisso/sgt-ver-firmas.git"
+  },
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "check": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test:brave": "tsx tests/brave.ts",
+    "trust:update": "node scripts/refresh-trust.mjs"
+  }
+}

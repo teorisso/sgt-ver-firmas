@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "SGT · Ver firmas",
+  "version": "0.1.4",
+  "description": "Verifica en memoria las firmas digitales de PDFs de Documentación Adjunta y e-Partes del SGT de Chaco.",
+  "action": { "default_title": "SGT · Ver firmas del PDF abierto" },
+  "background": { "service_worker": "background.js" },
+  "host_permissions": ["https://app.chaco.gob.ar/*"],
+  "web_accessible_resources": [
+    {
+      "resources": ["crl/*.crl.gz"],
+      "matches": ["https://app.chaco.gob.ar/*"]
+    }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.chaco.gob.ar/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
