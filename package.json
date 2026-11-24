@@ -10,12 +10,13 @@
   },
   "dependencies": {
     "@peculiar/pdf-core": "2.0.1",
+    "@zip.js/zip.js": "2.25.0",
     "asn1js": "4.1.0",
     "pkijs": "4.0.1",
     "reflect-metadata": "0.2.2"
   },
   "name": "sgt-ver-firmas",
-  "version": "0.1.4",
+  "version": "0.2.2",
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-only",

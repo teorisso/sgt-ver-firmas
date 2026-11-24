@@ -12,6 +12,7 @@ try {
         'dist/background.js'
         'dist/content.js'
         'dist/content.js.LEGAL.txt'
+        'dist/part-zip-bridge.js'
         'dist/LICENSE'
         'dist/THIRD_PARTY_NOTICES.txt'
         'dist/SOURCE.txt'

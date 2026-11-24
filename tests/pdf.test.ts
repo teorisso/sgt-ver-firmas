@@ -33,6 +33,19 @@ test('detecta una alteración dentro de la revisión firmada', async () => {
   assert.deepEqual(results.map(s => s.integrity), ['invalid']);
 });
 
+test('verifica una firma incremental sobre un PDF linearizado', async () => {
+  const [signature] = await verifyPdf((await fixtures).linearized);
+  assert.equal(signature.integrity, 'valid');
+  assert.equal(signature.laterChanges, false);
+});
+
+test('rechaza un enlace hacia delante si el índice base contradice la longitud declarada', async () => {
+  const { linearized } = await fixtures;
+  const malformed = new TextEncoder().encode(new TextDecoder().decode(linearized)
+    .replace(/(?<=\/Linearized 1 \/L )\d{10}/, '0000000001'));
+  await assert.rejects(verifyPdf(malformed), /estructura de revisiones inválida/);
+});
+
 test('valida una cadena anclada, una CRL firmada y un sello RFC 3161', async () => {
   const sample = await fixtures;
   const [signature] = await verifyPdf(sample.timestamped, sample.trust);

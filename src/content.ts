@@ -5,6 +5,7 @@ import {
 import { gridCaseLink, isCaseLink, previewCaseLink, type CaseLink } from './case-link';
 import { containingFrame, fetchPdf, isRendered, isVisible, sameOriginDocuments, visibleViewers, withinViewerScope, type Viewer } from './viewer';
 import { createPanel } from './panel';
+import { addPartZipButton } from './part-zip-ui';
 import { sha256Hex } from './pki';
 import { verifyPdf } from './verify';
 
@@ -133,10 +134,15 @@ async function openPartFromRow(control: HTMLElement, signal: AbortSignal) {
   if (!control.isConnected || !isVisible(control) || !localControl(control)) throw new Error(partViewerMissing);
   const link = gridCaseLink(control, document);
   if (link) {
-    const queued = await chrome.runtime.sendMessage({ kind: 'queue-part', link });
-    if (queued !== true) throw new Error('No se pudo iniciar la verificación. Abrí la e-Parte con la lupa.');
+    // A missing acknowledgement must not prevent the SGT from opening its own preview.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      signal.throwIfAborted();
+      const queued = await chrome.runtime.sendMessage({ kind: 'queue-part', link }).catch(() => false);
+      if (queued === true) break;
+    }
   }
   signal.throwIfAborted();
+  if (!control.isConnected) throw new Error(partViewerMissing);
   const before = new Map(visibleViewers(documents()).map(viewer => [viewer.element, viewer.url.href]));
   control.click();
   // The current SGT navigates to a dedicated preview. A viewer embedded in this page can resolve here.
@@ -197,6 +203,7 @@ function scan() {
   }
   const onCase = isCaseUrl(document.URL);
   if (onCase) {
+    addPartZipButton(document);
     for (const control of findControls(docs, isPartOpener)) {
       addButton(control, 'Ver firmas', signal => openPartFromRow(control, signal), false, PART_RESULT_LABEL);
     }

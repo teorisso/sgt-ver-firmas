@@ -10,24 +10,29 @@ const caseHeading = new RegExp(`^(?:tr[aá]mite\\s*:\\s*)?(${casePattern})(?=$|\
 const exactCase = new RegExp(`^${casePattern}$`, 'i');
 const numberedPart = /^e[ -]?parte\s+(?:nro\.?|n[uú]m(?:ero)?\.?|n[°º.]?)\s*(\d{1,9})(?=$|[\s:–—-])/i;
 
-function canonicalCase(value: string) {
+export function canonicalCase(value: string) {
   return value.replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').toUpperCase();
 }
 
-function partNumber(value: string) {
+export function partNumber(value: string) {
   const number = value.trim().replace(/^0+(?=\d)/, '');
   return /^[1-9]\d{0,8}$/.test(number) ? number : null;
 }
 
+export function caseIdFromTitle(title: string) {
+  const match = caseHeading.exec(title.trim());
+  return match ? canonicalCase(match[1]) : null;
+}
+
 export function gridCaseLink(control: HTMLElement, doc: Document): CaseLink | null {
-  const caseId = caseHeading.exec(doc.title.trim())?.[1];
+  const caseId = caseIdFromTitle(doc.title);
   const row = control.closest('tr');
   if (!caseId || !row) return null;
   // GeneXus exposes the e-Parte number in a named field on the same row as «Ver e-Parte».
   const fields = Array.from(row.querySelectorAll<HTMLElement>('[id]')).filter(element =>
     /^(?:span_)?W\d+TRAMITEPARTEORDEN_\d+$/i.test(element.id));
   const part = fields.length === 1 ? partNumber(fields[0].textContent ?? '') : null;
-  return part ? { caseId: canonicalCase(caseId), part } : null;
+  return part ? { caseId, part } : null;
 }
 
 export function previewCaseLink(doc: Document): CaseLink | null {

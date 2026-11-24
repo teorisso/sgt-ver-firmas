@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { chromium, type CDPSession } from 'playwright';
+import { BlobReader, BlobWriter, Uint8ArrayWriter, ZipReader, ZipWriter } from '@zip.js/zip.js/lib/zip-core-native.js';
 import { createFixtures } from './fixtures';
 
 const fixtures = await createFixtures();
@@ -23,8 +24,11 @@ const origin = 'https://app.chaco.gob.ar';
 const original = '/sgt/recursos/visor?temporal=sintetico';
 const previewPath = '/tramites/servlet/com.ecom.verpartedigital';
 const casePath = '/tramites/servlet/com.ecom.vertramites';
+const zipPopupPath = '/tramites/servlet/com.ecom.bajar10partes';
+const zipResultPath = '/tramites/servlet/com.ecom.abajardeavariaspartes';
 const caseCode = 'E 19-2026-10042-Ae';
 const fetches: string[] = [];
+const zipRequests: string[] = [];
 const partPath = '/sgt/parte.pdf';
 const otherPdfPath = '/sgt/otro.pdf';
 
@@ -56,6 +60,39 @@ function ePartGridFixture(mode: string) {
         <td><img title="Ver detalle de la Aprobación y/o Firma Digital" data-gx-evt="synthetic" width="24" height="24" src="/sgt/lupa.png"></td></tr></tbody>
     </table>`;
 }
+
+const bulkFixture = `<!doctype html><html lang="es"><meta charset="utf-8"><title>${caseCode}</title>
+  <input id="W003BTNIMPRIMIRCOMPLETO" type="button" data-gx-evt="5" value="Descargar E-Partes (ZIP)"
+    onclick="document.querySelector('.gx-popup').hidden = false; document.querySelector('.gx-popup iframe').src =
+      '${zipPopupPath}?opaco,gxPopupLevel%3D0%3B'">
+  <div class="gx-popup" hidden><span class="gx-popup-close" onclick="this.parentElement.hidden = true">×</span><iframe></iframe></div>
+  <div id="W003GRIDTABLEWITHPAGINATIONBAR"></div>
+  <script>
+    function renderParts(page) {
+      const [id, nro, name] = page === 1 ? ['24001', '1', 'Plan de trabajo'] : ['24012', '12', 'Certificación: anexo'];
+      document.querySelector('#W003GRIDTABLEWITHPAGINATIONBAR').innerHTML =
+        '<table id="W003GridContainerTbl"><tr><td><span id="span_W003TRAMITEPARTEID_0001" hidden>' + id +
+        '</span><span id="span_W003TRAMITEPARTEORDEN_0001">' + nro +
+        '</span><span id="span_W003TRAMITEPARTENOMBRE_0001">' + name + '</span></td></tr></table>' +
+        '<p>Página ' + page + ' de 2</p><ul class="pagination">' +
+        '<li class="prev ' + (page === 1 ? 'disabled' : '') + '"><a href="#" onclick="setTimeout(() => renderParts(1),120); return false">Ant</a></li>' +
+        '<li class="active"><a href="#">' + page + '</a></li>' +
+        '<li class="next ' + (page === 2 ? 'disabled' : '') + '"><a href="#" onclick="setTimeout(() => renderParts(2),120); return false">Sig</a></li></ul>';
+    }
+    renderParts(1);
+  </script>`;
+
+const bulkPopupFixture = `<!doctype html><html lang="es"><meta charset="utf-8"><title>Bajar Todas las e-partes (ZIP)</title>
+  <input type="button" data-gx-evt="5" value="Confirmar" onclick="confirmArchive()">
+  <script>
+    window.gx = { http: {redirect(url) {location.href = url}} };
+    function confirmArchive() {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', location.href);
+      xhr.onload = () => gx.http.redirect(JSON.parse(xhr.responseText).gxCommands[0].redirect.url, false, 2);
+      xhr.send('evento=confirmar');
+    }
+  </script>`;
 
 const attachmentViewerFixture = (active: boolean, custom: boolean) => `<!doctype html><html lang="es"><meta charset="utf-8">
   <title>Trámite de prueba</title>
@@ -124,10 +161,31 @@ try {
       await session.detach();
     }
     await context.addCookies([{ name: 'sesion_sintetica', value: 'activa', url: origin }]);
+    const originalZip = new ZipWriter(new BlobWriter(), { useWebWorkers: false });
+    await originalZip.add(`var/lib/tomcat8/webapps/tramites/PublicTempStorage/${caseCode}-12-24012.pdf`,
+      new BlobReader(new Blob([partPdf])));
+    await originalZip.add(`var/lib/tomcat8/webapps/tramites/PublicTempStorage/${caseCode}-1-24001.pdf`,
+      new BlobReader(new Blob([pdf])));
+    const originalArchive = Buffer.from(await (await originalZip.close()).arrayBuffer());
     await context.route('**/*', async route => {
       const request = route.request();
       const url = new URL(request.url());
       if (url.origin !== origin) return route.abort();
+      if (url.pathname === zipPopupPath) {
+        if (request.method() === 'POST') {
+          zipRequests.push('confirmar');
+          return route.fulfill({ json: { gxCommands: [{ redirect: { url: 'com.ecom.abajardeavariaspartes', forceDisableFrm: 2 } }] } });
+        }
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: bulkPopupFixture });
+      }
+      if (url.pathname === zipResultPath) {
+        zipRequests.push(request.resourceType());
+        assert.equal(url.search, '?gxPopupLevel%3D0%3B');
+        assert.match((await request.allHeaders()).cookie ?? '', /sesion_sintetica=activa/);
+        return route.fulfill({ contentType: 'application/zip', headers: {
+          'content-disposition': 'attachment; filename="zip-original.ZIP"',
+        }, body: originalArchive });
+      }
       if (url.pathname === '/sgt/prueba') {
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: fixture });
       }
@@ -136,6 +194,7 @@ try {
           body: previewFixture(url.searchParams.get('nro') === '4' ? '4' : '3', url.searchParams.has('varios')) });
       }
       if (url.pathname === casePath) {
+        if (url.searchParams.has('zip')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: bulkFixture });
         const mode = url.searchParams.get('grilla');
         if (mode) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: ePartGridFixture(mode) });
         if (url.searchParams.has('visor-gx')) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: geneXusViewer });
@@ -167,6 +226,29 @@ try {
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     const cdp = await context.newCDPSession(page);
+    await page.goto(origin + casePath + '?zip');
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 12_000 }),
+      page.getByRole('button', { name: 'Descargar ZIP con títulos' }).click({ timeout: 5_000 }),
+    ]);
+    await waitForText(cdp, /Descarga iniciada · 2 PDFs/);
+    assert.equal(await page.locator('ul.pagination li.active').innerText(), '1');
+    assert.deepEqual(zipRequests, ['confirmar', 'fetch']);
+    assert.match(download.url(), /^blob:https:\/\/app\.chaco\.gob\.ar\//);
+    assert.equal(download.suggestedFilename(), 'E 19-2026-10042-AE - e-Partes.zip');
+    const renamedZip = new ZipReader(new BlobReader(new Blob([await readFile(await download.path())])), { useWebWorkers: false });
+    try {
+      const entries = await renamedZip.getEntries();
+      assert.deepEqual(entries.map(entry => entry.filename), ['01 - Plan de trabajo.pdf', '12 - Certificación - anexo.pdf']);
+      for (const [index, entry] of entries.entries()) {
+        assert.equal(entry.directory, false);
+        const bytes = await entry.getData(new Uint8ArrayWriter());
+        assert.equal(createHash('sha256').update(bytes).digest('hex'), [hash, partHash][index]);
+      }
+    } finally {
+      await renamedZip.close();
+    }
+
     await page.goto(origin + '/sgt/prueba?vista=adjuntos');
     await page.getByRole('button', { name: 'Ver firmas', exact: true }).click({ timeout: 12_000 });
     const fromAttachment = await waitForText(cdp, /Firma 1 · Empresa sintética 1/);
@@ -252,7 +334,7 @@ try {
     assert.deepEqual(fetches, [original, original, original, partPath, partPath, original, original, original]);
 
     assert.deepEqual(errors, []);
-    console.log('Manifest V3: PDF de e-Parte desde fila y visor, adjunto pendiente y visor GeneXus comprobados.');
+    console.log('Manifest V3: ZIP renombrado desde una grilla paginada, PDF de e-Parte y adjunto comprobados.');
   } finally {
     await context.close();
   }

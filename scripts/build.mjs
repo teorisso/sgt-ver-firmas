@@ -3,7 +3,7 @@ import { build } from 'esbuild';
 
 await mkdir('dist', { recursive: true });
 const { metafile } = await build({
-  entryPoints: ['src/content.ts', 'src/background.ts'],
+  entryPoints: ['src/content.ts', 'src/background.ts', 'src/part-zip-bridge.ts'],
   outdir: 'dist',
   platform: 'browser',
   target: 'chrome120',

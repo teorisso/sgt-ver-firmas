@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import { fromBER } from 'asn1js';
 import {
-  PDFArray, PDFDictionary, PDFDocument, PDFName, PDFNumeric, PDFStream, PDFTextString, type PDFObject,
+  CrossReferenceStream, PDFArray, PDFDictionary, PDFDocument, PDFIndirectObject, PDFName, PDFNumeric,
+  PDFObject, PDFObjectReader, PDFStream, PDFTextString, type PDFDocumentUpdate,
 } from '@peculiar/pdf-core';
 import { Certificate, CertificateRevocationList, ContentInfo, SignedData } from 'pkijs';
 import {
@@ -66,9 +67,59 @@ function name(node: PDFDictionary, key: string) {
   return value instanceof PDFName ? value.text : '';
 }
 
+function isLinearizedBase(document: PDFDocument, first: PDFDocumentUpdate, firstOffset: number, main: PDFDocumentUpdate) {
+  if (main.previous || !first.xref || !main.xref || first.view.length >= main.view.length) return false;
+  const mainOffset = first.xref.Prev;
+  if (mainOffset === null || mainOffset <= first.view.length || mainOffset > main.xref.view.byteOffset) return false;
+  try {
+    const reader = PDFObject.getReader(document.view);
+    PDFObjectReader.skip(reader);
+    const firstObject = PDFIndirectObject.fromPDF(reader);
+    if (reader.position > firstOffset || !(firstObject.value instanceof PDFDictionary) ||
+      firstObject.value instanceof PDFStream) return false;
+    const value = (key: string) => {
+      const item = entry(firstObject.value as PDFDictionary, key);
+      return item instanceof PDFNumeric ? item.value : NaN;
+    };
+    if (value('Linearized') !== 1 || value('L') !== main.view.length) return false;
+    const table = value('T');
+    if (!Number.isSafeInteger(table)) return false;
+    return main.xref instanceof CrossReferenceStream
+      ? table <= mainOffset && mainOffset - table <= 2 &&
+        document.view.subarray(table, mainOffset).every(byte => byte === 10 || byte === 13)
+      : table >= mainOffset && table < main.view.length;
+  } catch {
+    return false;
+  }
+}
+
+function revisionBoundaries(document: PDFDocument) {
+  const invalid = () => new Error('El PDF tiene una estructura de revisiones inválida.');
+  const ends = new Set<number>();
+  let offset = document.update.startXref;
+  let linearized = false;
+  for (let update: PDFDocumentUpdate | null = document.update; update; update = update.previous) {
+    if (!update.xref) throw invalid();
+    const previous = update.previous;
+    const linkedOffset = update.xref.Prev;
+    const forwards = previous !== null && linkedOffset !== null && linkedOffset > offset;
+    if (forwards && !isLinearizedBase(document, update, offset, previous)) throw invalid();
+    if (previous && (linkedOffset === null || linkedOffset === offset ||
+      (!forwards && previous.view.length >= update.view.length))) throw invalid();
+
+    // ISO 32000-2 Annex F uses two cross-reference sections for a single linearized base.
+    if (forwards) linearized = true;
+    else ends.add(update.view.length);
+    const limit = forwards ? previous!.view.length - 1 : update.xref.view.byteOffset;
+    if (update.getObjects().some(object => object.offset > limit)) throw invalid();
+    offset = linkedOffset ?? 0;
+  }
+  if (document.wrongStructure && !linearized) throw invalid();
+  return ends;
+}
+
 function findSignatures(document: PDFDocument) {
   const found = new Map<string, PDFDictionary>();
-  const revisionEnds = new Set<number>();
   const visited = new WeakSet<PDFObject>();
   function walk(value: PDFObject) {
     if (visited.has(value)) return;
@@ -89,13 +140,12 @@ function findSignatures(document: PDFDocument) {
   }
 
   for (let update: typeof document.update | null = document.update; update; update = update.previous) {
-    revisionEnds.add(update.view.byteLength);
     // Each revision's own xref entries include fields that were removed or replaced later.
     for (const object of update.items) {
       if (object.type === 'n' || object.type === 'c') walk(object.value);
     }
   }
-  return { dictionaries: [...found.values()], revisionEnds };
+  return [...found.values()];
 }
 
 function signedRevision(dictionary: PDFDictionary, pdf: Uint8Array<ArrayBuffer>, revisionEnds: Set<number>) {
@@ -180,9 +230,8 @@ export async function verifyPdf(bytes: Uint8Array<ArrayBuffer>, trust: TrustMate
   const pdf = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
   const document = await PDFDocument.fromPDF(pdf);
   if (document.update.Encrypt) throw new Error('El PDF está cifrado. No se pudo leer su estructura de firmas.');
-  if (document.wrongStructure) throw new Error('El PDF tiene una estructura de revisiones inválida.');
-
-  const { dictionaries, revisionEnds } = findSignatures(document);
+  const revisionEnds = revisionBoundaries(document);
+  const dictionaries = findSignatures(document);
   if (!dictionaries.length) return [];
   const evidence = await documentEvidence(document, trust);
   const now = new Date();

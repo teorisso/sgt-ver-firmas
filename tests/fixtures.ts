@@ -121,6 +121,31 @@ async function addSignature(pdf: string, id: number, sign: (data: ArrayBuffer) =
   return unsigned.slice(0, start + 1) + hex.padEnd(padding.length, '0') + unsigned.slice(end - 1);
 }
 
+function linearizedPdf() {
+  const pad = (n: number) => String(n).padStart(10, '0');
+  const header = (length: number, main: number) => '%PDF-1.7\n' +
+    `9 0 obj\n<< /Linearized 1 /L ${pad(length)} /H [0 0] /O 3 /E ${pad(main)} /N 1 /T ${pad(main + 9)} >>\nendobj\n`;
+  const first = (main: number) => 'xref\n9 1\n0000000009 00000 n \n' +
+    `trailer\n<< /Root 1 0 R /Size 10 /Prev ${pad(main)} >>\nstartxref\n0\n%%EOF\n`;
+  const beginning = header(0, 0) + first(0);
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R >>',
+    `<< /Length ${pageContents.length} >>\nstream\n${pageContents}\nendstream`,
+  ];
+  let body = '';
+  let index = 'xref\n0 5\n0000000000 65535 f \n';
+  for (const [i, object] of objects.entries()) {
+    index += `${pad(beginning.length + body.length)} 00000 n \n`;
+    body += `${i + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const main = beginning.length + body.length;
+  const end = body + index + `trailer\n<< /Size 10 >>\nstartxref\n${header(0, 0).length}\n%%EOF\n`;
+  const length = beginning.length + end.length;
+  return header(length, main) + first(main) + end;
+}
+
 export async function createFixtures() {
   const now = new Date();
   const root = await issue('CA sintética', 1, now);
@@ -136,6 +161,7 @@ export async function createFixtures() {
     [4, `<< /Length ${pageContents.length} >>\nstream\n${pageContents}\nendstream`],
   ], 5);
   const single = await addSignature(unsigned, 5, async data => wrap(await signedCms(data, first)));
+  const linearized = await addSignature(linearizedPdf(), 5, async data => wrap(await signedCms(data, first)));
   const multiple = await addSignature(single, 7, async data => wrap(await signedCms(data, second)));
   const timestamped = await addSignature(unsigned, 5, async data => {
     const cms = await signedCms(data, first);
@@ -159,6 +185,7 @@ export async function createFixtures() {
     [9, `<< /Length ${ocspHex.length} /Filter /ASCIIHexDecode >>\nstream\n${ocspHex}\nendstream`],
   ], 10);
   return { unsigned: encode(unsigned), single: encode(single), multiple: encode(multiple),
+    linearized: encode(linearized),
     altered: encode(single.replace('PDF sintetico original', 'PDF sintetico alterado')),
     timestamped: encode(timestamped), trust: { roots: [root.cert], intermediates: [], crls: [good] },
     revoked, stale, ocsp, forgedOcsp, withDss: encode(withDss) };
